@@ -1,5 +1,7 @@
 # Secretary Memory - 秘书式多分区记忆系统
 
+![封面](./secretary-memory-cover.png)
+
 仿生现代秘书的多笔记本分工模式，将记忆分区管理，各司其职。
 
 ## 核心概念
