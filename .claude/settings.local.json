@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls:*)",
-      "Bash(unzip -l secretary-memory-v3.skill)",
-      "Bash(unzip:*)"
-    ]
-  }
-}
