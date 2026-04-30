@@ -351,23 +351,82 @@ python3 realtime_monitor.py --status          # 查看状态
 python3 realtime_monitor.py --test            # 测试模式
 ```
 
-## Hooks 配置（v3.0 推荐）
+## 自动触发配置（必读！）
+
+装完 skill 后，需要配置以下自动触发，记忆系统才能真正自动化运转。
+
+### 1. 定时任务（cron）
+
+| 功能 | 推荐时间 | 脚本 | 说明 |
+|------|---------|------|------|
+| 归档 consolidation | 每天 18:00 | `consolidate.py --verbose` | 将 7 天前日志归档到 archive |
+| 记忆提醒 | 每天 9:00 | `auto_skill_generator.py --remind` | 主动建议写入记忆 |
+
+**Claude Code 配置方式**：
+```
+# 归档任务（每天 18:00）
+/loop 24h /path/to/consolidate.py --verbose
+
+# 记忆提醒（每天 9:00）
+/loop 24h /path/to/auto_skill_generator.py --remind
+```
+
+**或用 cron 表达式**（settings.json）：
+```json
+{
+  "scheduled_tasks": [
+    {"cron": "0 18 * * *", "prompt": "/path/to/consolidate.py --verbose"},
+    {"cron": "0 9 * * *", "prompt": "/path/to/auto_skill_generator.py --remind"}
+  ]
+}
+```
+
+### 2. session:end Hook - Skill 自我改进记录
+
+每次会话结束时，自动记录该会话中使用的 skill 执行结果：
+
+```bash
+python3 <path>/session_summary.py --session-id {session_id}
+python3 <path>/profile_miner.py --session-id {session_id}
+python3 <path>/skill-creator/auto_skill_generator.py --record --skill <skill_name> --success
+```
+
+**注意**：将 `<skill_name>` 替换为实际触发的 skill 名称。
+
+### 3. consolidate.py - 什么时候跑？
+
+| 场景 | 触发方式 | 命令 |
+|------|---------|------|
+| 每日自动归档 | cron 定时 | `consolidate.py --verbose` |
+| 手动整理记忆 | 随时可跑 | `consolidate.py --verbose` |
+| 检查容量状态 | 随时可跑 | `consolidate.py --check-capacity` |
+| 预览归档效果 | 调试 | `consolidate.py --dry-run` |
+
+### 4. skill-creator reminder - 什么时候跑？
+
+| 场景 | 触发方式 | 命令 |
+|------|---------|------|
+| 每日主动提醒 | cron 定时 | `auto_skill_generator.py --remind` |
+| 手动检查 | 随时可跑 | `auto_skill_generator.py --remind --days 7` |
+
+---
+
+## Hooks 配置（简化版）
+
+如果只需要最基本的自动化，配置这两个 hook 即可：
 
 ```json
 {
   "hooks": {
     "session:start": "python3 <path>/auto_loader.py --hook-start --session-id {session_id} --topic {topic}",
-    "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}",
-    "cron": "0 18 * * * python3 <path>/consolidate.py --verbose"
+    "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}"
   }
 }
 ```
 
-注意：
-- `session:start` hook 在新会话开始时触发，启动跨会话召回
-- `session:end` hook 在每次会话结束时触发，自动生成会话摘要 + 提取偏好
-- `cron` 需要系统支持定时任务，建议使用 Claude Code 的 scheduled_tasks
-- 建议使用绝对路径指向 `secretary-memory/scripts/` 目录
+**定时任务需单独配置**（用 Claude Code 的 /loop 或 scheduled_tasks）
+
+---
 
 ## 自动运作流程 (v3.0)
 
