@@ -1,8 +1,18 @@
-# Secretary Memory - 秘书式多分区记忆系统
+# Secretary Memory - 秘书式多分区记忆系统 v3.0
 
 ![封面](./secretary-memory-cover.png)
 
 仿生现代秘书的多笔记本分工模式，将记忆分区管理，各司其职。
+
+## 五大核心改进
+
+| 改进 | 模块 | 触发时机 |
+|------|------|---------|
+| 1. 容量管理 | `capacity_manager.py` | 每次 consolidation 时自动运行 |
+| 2. FTS5 + LLM 摘要 | `fts5_index.py`, `session_search.py` | 搜索时或会话开始 |
+| 3. 跨会话召回 | `auto_loader.py` | OpenClaw 会话开始时 |
+| 4. 用户建模 | `user_model.py` | 每次会话结束时增量 |
+| 5. 自动 Skill 生成 | `skill-creator/` | 同一问题出现 ≥3 次 |
 
 ## 核心概念
 
@@ -20,38 +30,47 @@
 ## 目录结构
 
 ```
-memory/                          # 根目录
-├── daily/                      # 每日日志（7天内）
+memory/                              # 根目录
+├── daily/                          # 每日日志（7天内）
 │   └── 2026-04-30.md
-├── archive/                    # 归档（7天前）
-│   ├── daily/                 # 归档日志
-│   ├── projects/              # 已结束项目
-│   ├── decisions/             # 历史决策
-│   ├── index.json            # 话题索引
-│   └── .restore_log.json     # 归档操作日志
-├── agenda/                    # 待办
+├── archive/                        # 归档（7天前）
+│   ├── daily/                     # 归档日志
+│   ├── projects/                  # 已结束项目
+│   ├── decisions/                 # 历史决策
+│   ├── index.json                # 话题索引
+│   └── .restore_log.json          # 归档操作日志
+├── agenda/                         # 待办
 │   ├── today/
 │   ├── this-week/
 │   └── follow-ups/
-├── profile/                    # 用户偏好
-│   ├── preferences/           # 沟通风格、技术背景等
-│   ├── habits/               # 工作习惯偏好
-│   └── contacts/             # 联系人信息
-├── projects/                   # 进行中项目
-├── knowledge/                  # 知识沉淀
+├── profile/                         # 用户偏好
+│   ├── preferences/               # 沟通风格、技术背景等
+│   ├── habits/                   # 工作习惯偏好
+│   └── contacts/                 # 联系人信息
+├── projects/                       # 进行中项目
+├── knowledge/                      # 知识沉淀
 │   ├── tech/
 │   └── domain/
-├── scripts/                    # 脚本目录
-│   ├── consolidate.py         # 归档脚本
-│   ├── memory_search.py       # 搜索脚本
-│   ├── session_summary.py     # 会话摘要脚本
-│   ├── context_loader.py      # 上下文加载脚本
-│   ├── profile_miner.py       # 偏好提取脚本
-│   ├── conflict_detector.py   # 冲突检测脚本
-│   ├── restore.py             # 恢复/回溯脚本
-│   ├── migrate.py             # 迁移脚本
-│   └── realtime_monitor.py    # 实时监控脚本
-└── .monitor_state.json         # 监控状态文件
+├── scripts/                         # 脚本目录
+│   ├── session_summary.py         # 会话摘要
+│   ├── context_loader.py          # 上下文加载
+│   ├── memory_search.py           # 多分区搜索
+│   ├── consolidate.py             # 归档脚本 (集成容量管理)
+│   ├── capacity_manager.py        # [NEW] 容量管理
+│   ├── fts5_index.py             # [NEW] FTS5 全文搜索
+│   ├── session_search.py          # [NEW] 统一搜索入口
+│   ├── auto_loader.py             # [NEW] 跨会话召回
+│   ├── user_model.py              # [NEW] 用户关系图谱
+│   ├── profile_miner.py           # 偏好提取 (集成用户图谱)
+│   ├── conflict_detector.py       # 冲突检测
+│   ├── restore.py                 # 恢复/回溯
+│   ├── migrate.py                 # 迁移脚本
+│   ├── realtime_monitor.py         # 实时监控
+│   ├── skill-creator/             # [NEW] 自动 Skill 生成
+│   │   ├── SKILL.md
+│   │   └── auto_skill_generator.py
+└── references/
+    └── SPEC.md
 ```
 
 ## 各分区职责
@@ -86,203 +105,300 @@ memory/                          # 根目录
 - **内容**: 技术笔记、领域概念
 - **保留**: 持久
 
-## 脚本使用
+## 容量管理 (capacity_manager.py)
+
+自动检测 memory 目录容量，防止爆满。
+
+```bash
+# 检查容量（每次 consolidation 自动运行）
+python3 capacity_manager.py --check
+
+# 详细输出
+python3 capacity_manager.py --verbose --warn
+
+# 仅检查不执行
+python3 consolidate.py --check-capacity
+
+# 自动归档触发检查
+python3 capacity_manager.py --auto
+```
+
+**阈值配置：**
+| 指标 | 警告线 | 临界值 |
+|------|--------|--------|
+| MEMORY.md 行数 | 80% (400行) | 95% (475行) |
+| daily/ 文件数 | 80% (24个) | 95% (28个) |
+| archive/ 大小 | 80% (80MB) | 95% (95MB) |
+
+## FTS5 + LLM 摘要 (fts5_index.py, session_search.py)
+
+基于 SQLite FTS5 的快速全文搜索，配合 LLM 总结结果。
+
+```bash
+# 构建 FTS5 索引（首次使用）
+python3 session_search.py --build-index
+
+# FTS5 + LLM 摘要搜索
+python3 session_search.py "项目X 架构设计"
+
+# 纯 FTS5（无 LLM）
+python3 session_search.py "项目X" --no-llm
+
+# 传统分区搜索
+python3 session_search.py "项目X" --classic
+
+# 混合搜索（默认）
+python3 session_search.py "项目X"
+
+# 会话开始时召回
+python3 session_search.py "项目X" --context
+
+# 查看索引统计
+python3 session_search.py --stats
+
+# 优化数据库
+python3 fts5_index.py --vacuum
+```
+
+**搜索策略：**
+- `fts5`: 仅 FTS5 全文搜索（BM25 排序）
+- `classic`: 传统分区搜索
+- `hybrid`: FTS5 + 经典搜索合并（默认）
+
+## 跨会话召回 (auto_loader.py)
+
+会话开始时自动加载相关记忆，按优先级排序。
+
+```bash
+# CLI 用法
+python3 auto_loader.py --topic "项目X 架构"
+python3 auto_loader.py --topic "项目X" --inject   # 输出注入格式
+python3 auto_loader.py --stats                    # 查看加载状态
+
+# Hook 用法
+python3 auto_loader.py --hook-start --session-id {session_id} --topic {topic}
+```
+
+**优先级算法：**
+```
+综合得分 = 相关性 × 分区权重 × 时间加权
+
+分区权重:
+  agenda     → 2.0  (最高)
+  projects   → 1.8
+  profile    → 1.5
+  knowledge  → 1.2
+  daily      → 1.0
+  archive    → 0.5  (最低)
+
+时间加权:
+  7天内 → 1.5x
+  7天后 → 指数衰减，最少 0.3
+```
+
+## 用户建模 (user_model.py)
+
+从会话中提取实体和关系，构建用户知识图谱。
+
+```bash
+# 构建图谱
+python3 user_model.py --build
+
+# 增量更新
+python3 user_model.py --update
+
+# 图谱统计
+python3 user_model.py --stats
+
+# 按话题查询
+python3 user_model.py --query "项目X"
+
+# 获取实体局部图谱
+python3 user_model.py --entity "Python" --depth 2
+
+# 清理低频实体
+python3 user_model.py --vacuum
+```
+
+**实体类型：**
+| 类型 | 权重 | 示例 |
+|------|------|------|
+| user | 2.0 | 用户、客户 |
+| project | 1.8 | 项目、系统 |
+| technology | 1.5 | Python、React |
+| person | 1.3 | 开发者、工程师 |
+| preference | 1.2 | 喜欢简洁回答 |
+| concept | 1.0 | 架构、设计 |
+
+**关系类型：** `works_on`, `uses`, `manages`, `interested_in`, `collaborates_with`
+
+**数据文件：**
+- 图谱：`memory/.user_graph.json`
+- 统计：`memory/.user_graph_stats.json`
+
+## 自动 Skill 生成 (skill-creator/)
+
+检测复杂/重复任务，自动生成新 Skill 封装解决方案。
+
+```bash
+# 检测复杂任务（扫描 daily/ 历史）
+python3 skill-creator/auto_skill_generator.py --detect
+
+# 生成新 Skill
+python3 skill-creator/auto_skill_generator.py --generate \
+    --name "task-tracker" \
+    --pattern "task_tracking" \
+    --description "自动化任务追踪" \
+    --triggers "任务,todo,追踪" \
+    --steps "创建任务" "更新状态" "生成报告"
+
+# 注册触发词
+python3 skill-creator/auto_skill_generator.py --register \
+    --skill "task-tracker" --triggers "任务,todo"
+
+# 查看统计
+python3 skill-creator/auto_skill_generator.py --stats
+
+# 列出已生成的 Skills
+python3 skill-creator/auto_skill_generator.py --list
+
+# 自我改进
+python3 skill-creator/auto_skill_generator.py --improve
+```
+
+**内置复杂模式识别：**
+| 模式 | 关键词 | 建议名称 |
+|------|--------|----------|
+| task_tracking | 任务、todo、追踪、待办 | task-tracker |
+| code_review | 代码审查、review、PR | code-review |
+| bug_triage | bug、修复、问题 | bug-triage |
+| meeting_notes | 会议、meeting、纪要 | meeting-notes |
+| data_analysis | 分析、数据、报表 | data-analysis |
+| doc_generation | 文档、doc、生成 | doc-generator |
+| test_generation | 测试、test、用例 | test-generator |
+| deployment | 部署、deploy、发布 | deploy-helper |
+| api_design | API、接口、rest | api-designer |
+| db_schema | 数据库、schema、表结构 | db-schema-manager |
+
+## 原有脚本
 
 ### 会话摘要 session_summary.py
 
-在会话结束时自动生成摘要，写入 `daily/`。
-
 ```bash
-# 生成摘要
 python3 session_summary.py --session "今天讨论了..." --topics "项目X, 决策Y"
-
-# 预览（不写入）
-python3 session_summary.py --session "..." --topics "..." --dry-run
-
-# JSON 格式输出
-python3 session_summary.py --session "..." --topics "..." --json
-
-# 持续监控模式：实时增量追加会话内容
-python3 session_summary.py --watch
-
-# 带会话ID的持续监控
+python3 session_summary.py --session "..." --dry-run  # 预览
+python3 session_summary.py --watch                    # 实时监控追加
 python3 session_summary.py --watch --session-id {session_id}
 ```
 
 ### 上下文加载 context_loader.py
 
-新会话开始时召回相关历史记忆（每分区 3 条）。
-
 ```bash
-# 召回相关记忆
 python3 context_loader.py "项目X 设计方案"
-
-# 简洁模式（只输出关键摘要）
 python3 context_loader.py "项目X" --quiet
-
-# 输出可直接注入 prompt 的格式
 python3 context_loader.py "项目X" --format prompt
-
-# 每分区限制为 5 条
 python3 context_loader.py "项目X" --limit 5
 ```
 
 ### 偏好提取 profile_miner.py
 
-从会话内容中增量提取用户偏好，只增不改。
-
 ```bash
-# 从会话内容提取偏好
 python3 profile_miner.py --session "用户说：喜欢简洁的回答"
-
-# 从文件读取内容
 python3 profile_miner.py --file /path/to/session.log
-
-# 预览将要提取的偏好（不写入）
-python3 profile_miner.py --session "..." --dry-run
-
-# 列出当前已提取的偏好
 python3 profile_miner.py --list
 ```
 
 ### 冲突检测 conflict_detector.py
 
-检测新记忆与已有记忆的矛盾，主动提示。
-
 ```bash
-# 检测冲突
 python3 conflict_detector.py --new "决定用方案A" --topic "项目X架构"
-
-# 从文件读取新内容
 python3 conflict_detector.py --new-file /path/to/content.md --topic "架构设计"
 ```
 
 ### 恢复/回溯 restore.py
 
-支持按日期、话题、文件类型精细化恢复。
-
 ```bash
-# 列出归档操作历史
 python3 restore.py --list
-
-# 列出所有已归档的文件
-python3 restore.py --archives
-
-# 恢复指定日期的归档
 python3 restore.py --date 2026-04-23
-
-# 恢复指定话题的归档
 python3 restore.py --topic "项目X"
-
-# 预览恢复（不实际执行）
-python3 restore.py --date 2026-04-23 --dry-run
+python3 restore.py --dry-run
 ```
 
 ### 归档 consolidation
 
 ```bash
-# 干跑测试（不实际修改）
-python3 consolidate.py --dry-run
-
-# 实际执行
 python3 consolidate.py --verbose
-
-# 查看归档操作历史
-python3 consolidate.py --restore-log
+python3 consolidate.py --dry-run
+python3 consolidate.py --check-capacity  # 仅检查容量
 ```
 
-归档流程：
-1. 扫描 `daily/` 下超过7天的日志
-2. 提取项目信息 → `archive/projects/`
-3. 提取决策信息 → `archive/decisions/`
-4. 移动日志 → `archive/daily/`
-5. 更新 `memory.md` 精选摘要
-6. 更新 `archive/index.json` 话题索引
-
-### 多分区搜索
+### 多分区搜索 memory_search.py
 
 ```bash
-# 搜索所有分区（默认，每分区最多 3 条）
 python3 memory_search.py "用户偏好"
-
-# 深度搜索（包含 archive 历史归档）
 python3 memory_search.py "GUI Agent" --deep
-
-# 仅搜索历史归档
-python3 memory_search.py "之前那个项目" --archive-only
-
-# 指定分区
 python3 memory_search.py "项目" -p profile,projects
-
-# 每分区限制为 5 条
 python3 memory_search.py "项目" --per-partition-limit 5
 ```
 
-### 迁移旧结构
+### 实时监控 realtime_monitor.py
 
 ```bash
-# 干跑测试
-python3 migrate.py --dry-run
-
-# 执行迁移
-python3 migrate.py
+python3 realtime_monitor.py --daemon          # 事件驱动（推荐）
+python3 realtime_monitor.py --daemon --poll    # 降级轮询
+python3 realtime_monitor.py --once            # 单次检查
+python3 realtime_monitor.py --status          # 查看状态
+python3 realtime_monitor.py --test            # 测试模式
 ```
 
-### 实时增量监控 realtime_monitor.py
+## Hooks 配置（v3.0 推荐）
 
-**v2 修复版**：解决写时移动冲突、轮询延迟、文件句柄问题。
-
-```bash
-# 事件驱动监控（推荐，自动降级到轮询）
-python3 realtime_monitor.py --daemon
-
-# 强制使用轮询模式
-python3 realtime_monitor.py --daemon --poll
-
-# 单次运行（立即检查后退出）
-python3 realtime_monitor.py --once
-
-# 查看监控状态
-python3 realtime_monitor.py --status
-
-# 测试模式
-python3 realtime_monitor.py --test
+```json
+{
+  "hooks": {
+    "session:start": "python3 <path>/auto_loader.py --hook-start --session-id {session_id} --topic {topic}",
+    "session:end": "python3 <path>/session_summary.py --session-id {session_id} && python3 <path>/profile_miner.py --session-id {session_id}",
+    "cron": "0 18 * * * python3 <path>/consolidate.py --verbose"
+  }
+}
 ```
 
-**v2 修复内容**：
+注意：
+- `session:start` hook 在新会话开始时触发，启动跨会话召回
+- `session:end` hook 在每次会话结束时触发，自动生成会话摘要 + 提取偏好
+- `cron` 需要系统支持定时任务，建议使用 Claude Code 的 scheduled_tasks
+- 建议使用绝对路径指向 `secretary-memory/scripts/` 目录
 
-| 问题 | 解决方案 |
-|------|---------|
-| 写时移动冲突 | `safe_move_to_daily()` 等待文件写完才移动，使用 `fuser`/`lsof` 检测文件句柄 |
-| 轮询延迟 | 支持 FSEvents (macOS) / inotify (Linux) 事件驱动，零延迟 |
-| 文件句柄问题 | 移动后创建 symlink，OpenClaw 继续写到正确位置；内容同步合并 |
-
-## 自动运作流程
-
-### 传统模式（定时批处理）
+## 自动运作流程 (v3.0)
 
 ```
-写 memory/YYYY-MM-DD.md
-        ↓ (定时移动，延迟)
-移动到 memory/daily/YYYY-MM-DD.md
-        ↓ (每天 18:00 cron: consolidation)
-7天前 → archive/daily/
-项目 → archive/projects/
-决策 → archive/decisions/
-关联 → archive/index.json
+会话开始
+    ↓
+auto_loader.py 加载相关记忆 (FTS5 + 优先级排序)
+    ↓
+用户交互...
+    ↓
+会话结束
+    ↓
+session_summary.py 生成摘要 → daily/
+    ↓
+profile_miner.py 提取偏好 + user_model.py 更新图谱
+    ↓
+(定时 18:00)
+    ↓
+consolidate.py 归档 (自动检查容量)
+    ↓
+capacity_manager.py 容量警告 (≥80%)
+    ↓
+容量临界 (≥95%) → 自动触发更多归档
 ```
 
-### 推荐模式（实时增量）
+## 搜索优先级策略
 
-```
-写 memory/YYYY-MM-DD.md
-        ↓ (realtime_monitor 实时检测)
-立即移动到 memory/daily/YYYY-MM-DD.md
-        ↓ (session_summary --watch 持续追加)
-实时增量写入会话内容
-        ↓ (每天 18:00 cron: consolidation)
-7天前 → archive/daily/
-```
+- **常规搜索**: profile > agenda > projects > knowledge > daily > archive
+- **深度搜索 (--deep)**: 包含 archive/
+- **仅归档搜索 (--archive-only)**: 仅查 archive/
+- **FTS5 搜索**: BM25 排序 + LLM 摘要
 
 ## 归档触发机制
 
@@ -299,39 +415,6 @@ python3 realtime_monitor.py --test
 - **手动触发**: 用户要求整理记忆时
 - **迁移触发**: 首次使用此技能时，运行 migrate.py
 
-## Hooks 配置（自动化）
+## 参考文档
 
-### 推荐配置 - 实时增量写入
-
-```json
-{
-  "hooks": {
-    "session:start": "python3 <path-to-scripts>/realtime_monitor.py --daemon --interval 3",
-    "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
-    "cron": "0 18 * * * python3 <path-to-scripts>/consolidate.py --verbose"
-  }
-}
-```
-
-### 传统配置 - 定时批处理
-
-```json
-{
-  "hooks": {
-    "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
-    "cron": "0 0,6,12,18 * * * python3 <path-to-scripts>/realtime_monitor.py --once"
-  }
-}
-```
-
-注意：
-- `session:start` hook 在新会话开始时触发，启动实时监控
-- `session:end` hook 在每次会话结束时触发，自动生成会话摘要
-- `cron` 需要系统支持定时任务，Claude Code 的 settings.json 不直接支持 cron，需使用外部定时器或 Claude Code 的 scheduled_tasks
-- 建议使用绝对路径指向 `secretary-memory/scripts/` 目录
-
-## 搜索优先级策略
-
-- **常规搜索**: profile > agenda > projects > knowledge > daily > archive
-- **深度搜索 (--deep)**: 包含 archive/
-- **仅归档搜索 (--archive-only)**: 仅查 archive/
+详细规格说明见 `references/SPEC.md`
