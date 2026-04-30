@@ -25,7 +25,8 @@ memory/                          # 根目录
 │   ├── daily/                 # 归档日志
 │   ├── projects/              # 已结束项目
 │   ├── decisions/             # 历史决策
-│   └── index.json            # 话题索引
+│   ├── index.json            # 话题索引
+│   └── .restore_log.json     # 归档操作日志
 ├── agenda/                    # 待办
 │   ├── today/
 │   ├── this-week/
@@ -38,14 +39,17 @@ memory/                          # 根目录
 ├── knowledge/                  # 知识沉淀
 │   ├── tech/
 │   └── domain/
-├── consolidate.py              # 归档脚本
-├── memory_search.py           # 搜索脚本
-├── session_summary.py         # 会话摘要脚本
-├── context_loader.py          # 上下文加载脚本
-├── profile_miner.py           # 偏好提取脚本
-├── conflict_detector.py       # 冲突检测脚本
-├── restore.py                # 恢复/回溯脚本
-└── migrate.py                 # 迁移脚本
+├── scripts/                    # 脚本目录
+│   ├── consolidate.py         # 归档脚本
+│   ├── memory_search.py       # 搜索脚本
+│   ├── session_summary.py     # 会话摘要脚本
+│   ├── context_loader.py      # 上下文加载脚本
+│   ├── profile_miner.py       # 偏好提取脚本
+│   ├── conflict_detector.py   # 冲突检测脚本
+│   ├── restore.py             # 恢复/回溯脚本
+│   ├── migrate.py             # 迁移脚本
+│   └── realtime_monitor.py    # 实时监控脚本
+└── .monitor_state.json         # 监控状态文件
 ```
 
 ## 各分区职责
@@ -95,6 +99,12 @@ python3 session_summary.py --session "..." --topics "..." --dry-run
 
 # JSON 格式输出
 python3 session_summary.py --session "..." --topics "..." --json
+
+# 持续监控模式：实时增量追加会话内容
+python3 session_summary.py --watch
+
+# 带会话ID的持续监控
+python3 session_summary.py --watch --session-id {session_id}
 ```
 
 ### 上下文加载 context_loader.py
@@ -216,17 +226,60 @@ python3 migrate.py --dry-run
 python3 migrate.py
 ```
 
+### 实时增量监控 realtime_monitor.py
+
+**v2 修复版**：解决写时移动冲突、轮询延迟、文件句柄问题。
+
+```bash
+# 事件驱动监控（推荐，自动降级到轮询）
+python3 realtime_monitor.py --daemon
+
+# 强制使用轮询模式
+python3 realtime_monitor.py --daemon --poll
+
+# 单次运行（立即检查后退出）
+python3 realtime_monitor.py --once
+
+# 查看监控状态
+python3 realtime_monitor.py --status
+
+# 测试模式
+python3 realtime_monitor.py --test
+```
+
+**v2 修复内容**：
+
+| 问题 | 解决方案 |
+|------|---------|
+| 写时移动冲突 | `safe_move_to_daily()` 等待文件写完才移动，使用 `fuser`/`lsof` 检测文件句柄 |
+| 轮询延迟 | 支持 FSEvents (macOS) / inotify (Linux) 事件驱动，零延迟 |
+| 文件句柄问题 | 移动后创建 symlink，OpenClaw 继续写到正确位置；内容同步合并 |
+
 ## 自动运作流程
+
+### 传统模式（定时批处理）
 
 ```
 写 memory/YYYY-MM-DD.md
-        ↓ (每天 00:05 cron: 移动到 daily/)
+        ↓ (定时移动，延迟)
 移动到 memory/daily/YYYY-MM-DD.md
         ↓ (每天 18:00 cron: consolidation)
 7天前 → archive/daily/
 项目 → archive/projects/
 决策 → archive/decisions/
 关联 → archive/index.json
+```
+
+### 推荐模式（实时增量）
+
+```
+写 memory/YYYY-MM-DD.md
+        ↓ (realtime_monitor 实时检测)
+立即移动到 memory/daily/YYYY-MM-DD.md
+        ↓ (session_summary --watch 持续追加)
+实时增量写入会话内容
+        ↓ (每天 18:00 cron: consolidation)
+7天前 → archive/daily/
 ```
 
 ## 归档触发机制
@@ -246,20 +299,33 @@ python3 migrate.py
 
 ## Hooks 配置（自动化）
 
-在 `settings.json` 中配置以下 hooks 实现自动化：
+### 推荐配置 - 实时增量写入
 
 ```json
 {
   "hooks": {
+    "session:start": "python3 <path-to-scripts>/realtime_monitor.py --daemon --interval 3",
     "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
     "cron": "0 18 * * * python3 <path-to-scripts>/consolidate.py --verbose"
   }
 }
 ```
 
+### 传统配置 - 定时批处理
+
+```json
+{
+  "hooks": {
+    "session:end": "python3 <path-to-scripts>/session_summary.py --session-id {session_id}",
+    "cron": "0 0,6,12,18 * * * python3 <path-to-scripts>/realtime_monitor.py --once"
+  }
+}
+```
+
 注意：
-- `session:end` hook 会在每次会话结束时触发，自动生成会话摘要
-- `cron` 需要系统支持定时任务
+- `session:start` hook 在新会话开始时触发，启动实时监控
+- `session:end` hook 在每次会话结束时触发，自动生成会话摘要
+- `cron` 需要系统支持定时任务，Claude Code 的 settings.json 不直接支持 cron，需使用外部定时器或 Claude Code 的 scheduled_tasks
 - 建议使用绝对路径指向 `secretary-memory/scripts/` 目录
 
 ## 搜索优先级策略
